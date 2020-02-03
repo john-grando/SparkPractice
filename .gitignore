@@ -2,3 +2,4 @@
 metastore_db/*
 linkage/*
 zips/*
+.metals/*
