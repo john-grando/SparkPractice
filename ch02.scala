@@ -103,3 +103,23 @@ val parsed = spark.read.
 // Convert DataFrame to Dataset
 val matchData = parsed.as[MatchData]
 matchData.show()
+
+import spark.implicits._
+// Create score class
+case class Score(value: Double) {
+  def +(oi: Option[Int]) = {
+    Score(value + oi.getOrElse(0))
+  }
+}
+
+// Create scoring function
+def scoreMatchData(md: MatchData): Double = {
+  (Score(md.cmp_lname_c1.getOrElse(0.0))).value
+  //+ md.cmp_plz +
+  //md.cmp_by + md.cmp_bd + md.cmp_bm).value
+}
+
+// Create scored variable
+val scored = matchData.map { md =>
+  (scoreMatchData(md), md.is_match)
+}.toDF("score", "is_match")
