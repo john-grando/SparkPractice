@@ -79,19 +79,19 @@ case class MatchData(
 
 // Create schema, not in book (workaround)
 import org.apache.spark.sql.types.StructType
-val matchSchema = new StructType()
-  .add("id_1", "int")
-  .add("id_2", "int")
-  .add("cmp_fname_c1", "double")
-  .add("cmp_fname_c2", "double")
-  .add("cmp_lname_c1", "double")
-  .add("cmp_lname_c2", "double")
-  .add("cmp_sex", "int")
-  .add("cmp_bd", "int")
-  .add("cmp_bm", "int")
-  .add("cmp_by", "int")
-  .add("cmp_plz", "int")
-  .add("is_match", "boolean")
+val matchSchema = new StructType().
+  add("id_1", "int").
+  add("id_2", "int").
+  add("cmp_fname_c1", "double").
+  add("cmp_fname_c2", "double").
+  add("cmp_lname_c1", "double").
+  add("cmp_lname_c2", "double").
+  add("cmp_sex", "int").
+  add("cmp_bd", "int").
+  add("cmp_bm", "int").
+  add("cmp_by", "int").
+  add("cmp_plz", "int").
+  add("is_match", "boolean")
 
 // Reload data with schema
 val parsed = spark.read.
@@ -114,12 +114,25 @@ case class Score(value: Double) {
 
 // Create scoring function
 def scoreMatchData(md: MatchData): Double = {
-  (Score(md.cmp_lname_c1.getOrElse(0.0))).value
-  //+ md.cmp_plz +
-  //md.cmp_by + md.cmp_bd + md.cmp_bm).value
+  (Score(md.cmp_lname_c1.getOrElse(0.0)) +
+  md.cmp_plz + md.cmp_by + md.cmp_bd +
+  md.cmp_bm).value
 }
 
 // Create scored variable
 val scored = matchData.map { md =>
   (scoreMatchData(md), md.is_match)
 }.toDF("score", "is_match")
+
+// Create contingency table function
+def crossTabs(scored: DataFrame, t: Double): DataFrame = {
+  scored.
+  selectExpr(s"score >= $t as above", "is_match").
+  groupBy("above").
+  pivot("is_match", Seq("true", "false")).
+  count()
+}
+
+// Test
+crossTabs(scored, 4.0).show()
+crossTabs(scored, 2.0).show()
