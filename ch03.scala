@@ -95,7 +95,7 @@ trainData.cache()
 // Build the model
 import org.apache.spark.ml.recommendation._
 import scala.util.Random
-  val model = new ALS().
+val model = new ALS().
   setSeed(Random.nextLong()).
   setImplicitPrefs(true).
   setRank(10).
@@ -194,3 +194,60 @@ def predictMostListened(train: DataFrame)(allData: DataFrame) = {
 }
 
 areaUnderCurve(cvData, bAllArtistIDs, predictMostListened(trainData))
+
+// train hyperparameters
+val evaluations =
+  for (rank <- Seq(5,30);
+    regParam <- Seq(4.0, 0.0001);
+    alpha <- Seq(1.0, 40.0))
+  yield {
+    val model = new ALS().
+      setSeed(Random.nextLong()).
+      setImplicitPrefs(true).
+      setRank(rank).setRegParam(regParam).
+      setAlpha(alpha).setMaxIter(20).
+      setUserCol("user").setItemCol("artist").
+      setRatingCol("count").setPredictionCol("prediction").
+      fit(trainData)
+
+// Get AUC for each run
+val auc = areaUnderCurve(cvData, bAllArtistIDs, model.transform)
+  model.userFactors.unpersist()
+  model.itemFactors.unpersist()
+  (auc, (rank, regParam, alpha))
+}
+
+// Show auc results
+evaluations.sorted.reverse.foreach(println)
+
+// create new model based on hyperparameters
+val modelPostHyper = new ALS().
+  setSeed(Random.nextLong()).
+  setImplicitPrefs(true).
+  setRank(30).
+  setRegParam(4).
+  setAlpha(1.0).
+  setMaxIter(5).
+  setUserCol("user").
+  setItemCol("artist").
+  setRatingCol("count").
+  setPredictionCol("prediction").
+  fit(trainData)
+
+// Show recommendations for user again
+val topRecommendationsPostHyper = makeRecommendations(modelPostHyper, userID, 5)
+topRecommendationsPostHyper.show()
+
+val recommendedArtistIDsPostHyper =
+  topRecommendationsPostHyper.select("artist").as[Int].collect()
+
+artistByID.filter($"id" isin (recommendedArtistIDsPostHyper:_*)).show()
+
+// Make recommendations for top 100
+val someUsers = allData.select("user").as[Int].distinct().take(100)
+val someRecommendations =
+  someUsers.map(userID => (userID, makeRecommendations(modelPostHyper, userID, 5)))
+someRecommendations.foreach { case (userID, recsDF) =>
+  val recommendedArtists = recsDF.select("artist").as[Int].collect()
+  println(s"$userID -> ${recommendedArtists.mkString(", ")}")
+}
