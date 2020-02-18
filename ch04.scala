@@ -145,8 +145,8 @@ val validator = new TrainValidationSplit().
   setEstimatorParamMaps(paramGrid).
   setTrainRatio(0.9)
 
-  // Repartition trainData due to its size and available resrouces
-  //val trainDataPartitioned = trainData.repartition(100)
+// Repartition trainData due to its size and available resrouces
+val trainDataPartitioned = trainData.repartition(200)
 
 //val validatorModel = validator.fit(trainDataPartitioned)
 
@@ -201,9 +201,39 @@ val bestClassifier = new DecisionTreeClassifier().
   setMaxBins(300).
   setMinInfoGain(0.0)
 
-val bestPipeline = new Pipeline().setStages(Array(assembler, bestClassifier))
-val bestModelShort = bestPipeline.fit(trainData)
+//val bestPipeline = new Pipeline().setStages(Array(assembler, bestClassifier))
+//val bestModelShort = bestPipeline.fit(trainDataPartitioned)
 
 // Show train and test data metrics
-multiclassEval.evaluate(bestModelShort.transform(trainData))
-multiclassEval.evaluate(bestModelShort.transform(testData))
+//multiclassEval.evaluate(bestModelShort.transform(trainData))
+//multiclassEval.evaluate(bestModelShort.transform(testData))
+
+import org.apache.spark.ml.linalg.SparseVector
+import org.apache.spark.sql.functions._
+
+def unencodeOneHot(data: DataFrame): DataFrame = {
+  val wildernessCols = (0 until 4).map(i => s"Wilderness_Area_$i").toArray
+
+  val wildernessAssembler = new VectorAssembler().
+    setInputCols(wildernessCols).
+    setOutputCol("wilderness")
+
+  // Note, this varies from the book, just using 'Vector' is not sufficient.
+  // The use of the standard Vector package is referenced, not the SparkML
+  // vector, and Sparse or Dense need to specifically be stated.
+  val unhotUDF = udf((vec: SparseVector) => vec.toArray.indexOf(1.0).toDouble)
+
+  val withWilderness = wildernessAssembler.transform(data).
+    drop(wildernessCols:_*).
+    withColumn("wilderness", unhotUDF($"wilderness"))
+
+  val soilCols = (0 until 40).map(i => s"Soil_Type_$i").toArray
+
+  val soilAssembler = new VectorAssembler().
+    setInputCols(soilCols).
+    setOutputCol("soil")
+
+  soilAssembler.transform(withWilderness).
+    drop(soilCols:_*).
+    withColumn("soil", unhotUDF($"soil"))
+}
