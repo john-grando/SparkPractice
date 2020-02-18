@@ -153,7 +153,7 @@ val trainDataPartitioned = trainData.repartition(200)
 // Print best model  Commented because grid search also commented out to
 // save time
 
-// import org.apache.spark.ml.PipelineModel
+import org.apache.spark.ml.PipelineModel
 // val bestModel = validatorModel.bestModel
 // bestModel.asInstanceOf[PipelineModel].stages.last.extractParamMap
 
@@ -201,12 +201,12 @@ val bestClassifier = new DecisionTreeClassifier().
   setMaxBins(300).
   setMinInfoGain(0.0)
 
-//val bestPipeline = new Pipeline().setStages(Array(assembler, bestClassifier))
-//val bestModelShort = bestPipeline.fit(trainDataPartitioned)
-
+val bestPipeline = new Pipeline().setStages(Array(assembler, bestClassifier))
+// Commented due to run time.
+// val bestModelShort = bestPipeline.fit(trainDataPartitioned)
 // Show train and test data metrics
-//multiclassEval.evaluate(bestModelShort.transform(trainData))
-//multiclassEval.evaluate(bestModelShort.transform(testData))
+// multiclassEval.evaluate(bestModelShort.transform(trainData))
+// multiclassEval.evaluate(bestModelShort.transform(testData))
 
 import org.apache.spark.ml.linalg.SparseVector
 import org.apache.spark.sql.functions._
@@ -237,3 +237,63 @@ def unencodeOneHot(data: DataFrame): DataFrame = {
     drop(soilCols:_*).
     withColumn("soil", unhotUDF($"soil"))
 }
+
+// Unencode training data
+val unencTrainData = unencodeOneHot(trainDataPartitioned)
+
+// Create pipeline for data with categorical columns
+import org.apache.spark.ml.feature.VectorIndexer
+val inputCols = unencTrainData.columns.filter(_ != "Cover_Type")
+val catAssembler = new VectorAssembler().
+  setInputCols(inputCols).
+  setOutputCol("featureVector")
+val catIndexer = new VectorIndexer().
+  setMaxCategories(40).
+  setInputCol("featureVector").
+  setOutputCol("indexedVector")
+val catClassifier = new DecisionTreeClassifier().
+  setSeed(Random.nextLong()).
+  // setMaxDepth(20).
+  // setMaxBins(300).
+  // setMinInfoGain(0.0)
+  setMaxBins(50).
+  setLabelCol("Cover_Type").
+  setFeaturesCol("indexedVector").
+  setPredictionCol("prediction")
+
+val categoricalPipeline = new Pipeline().setStages(Array(catAssembler, catIndexer, catClassifier))
+val categoricalModel = categoricalPipeline.fit(unencTrainData)
+multiclassEval.evaluate(categoricalModel.transform(unencTrainData))
+multiclassEval.evaluate(categoricalModel.transform(unencodeOneHot(testData)))
+
+// Set up random forest classifier
+import org.apache.spark.ml.classification.RandomForestClassifier
+val randomForestClassifier = new RandomForestClassifier().
+  setSeed(Random.nextLong()).
+  setLabelCol("Cover_Type").
+  setFeaturesCol("indexedVector").
+  // setMaxDepth(20).
+  // setMaxBins(300).
+  // setMinInfoGain(0.0)
+  setMaxBins(50).
+  setPredictionCol("prediction")
+
+
+val randomForestPipeline = new Pipeline().setStages(Array(catAssembler, catIndexer, randomForestClassifier))
+val randomForestModel = randomForestPipeline.fit(unencTrainData)
+
+// Print feature importances.
+import org.apache.spark.ml.classification.RandomForestClassificationModel
+
+// Note, the model must be extracted from the pipeline, which is in the last  stage
+randomForestModel.
+  asInstanceOf[PipelineModel].
+  stages.
+  last.
+  asInstanceOf[RandomForestClassificationModel].
+  featureImportances.
+  toArray.
+  zip(inputCols).
+  sorted.
+  reverse.
+  foreach(println)
