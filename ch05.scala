@@ -1,10 +1,26 @@
+// identify data files
+
+// Full file
+// val dataFile: String = "kddcup/kddcup.data"
+
+// Sample file
+val dataFile: String = "kddcup/kddcup.data_10_percent"
+
 // Load data
 val dataWithoutHeader = spark.read.
   option("inferSchema", true).
   option("header", false).
-  csv("kddcup/kddcup.data")
+  csv(dataFile)
 
-// Make DataFrame
+// Make DataFrame.
+// Use if/else to partition data if it is large
+// Hopefully this will prevent any max heap errors
+val numPartitions: Int = if(dataWithoutHeader.count > 500000) {
+  200
+} else {
+  sc.defaultMinPartitions
+}
+
 val data = dataWithoutHeader.toDF(
   "duration", "protocol_type", "service", "flag",
   "src_bytes", "dst_bytes", "land", "wrong_fragment", "urgent",
@@ -20,7 +36,7 @@ val data = dataWithoutHeader.toDF(
   "dst_host_serror_rate", "dst_host_srv_serror_rate",
   "dst_host_rerror_rate", "dst_host_srv_rerror_rate",
   "label").
-  repartition(200)
+  repartition(numPartitions)
 
 // Investigate data labels
 data.
@@ -53,3 +69,45 @@ withCluster.select("cluster", "label").
   groupBy("cluster", "label").count().
   orderBy($"cluster", $"count".desc).
   show(25)
+
+// Create pipeline and run hyperparameter test for kmeans
+import scala.util.Random
+import org.apache.spark.sql.DataFrame
+def clusteringScore0(data: DataFrame, k: Int): Double = {
+  val assembler = new VectorAssembler().
+    setInputCols(data.columns.filter(_ != "label")).
+    setOutputCol("featureVector")
+  val kmeans = new KMeans().
+    setSeed(Random.nextLong()).
+    setK(k).
+    setPredictionCol("cluster").
+    setFeaturesCol("featureVector")
+  val pipeline = new Pipeline().setStages(Array(assembler, kmeans))
+  val kmeansModel = pipeline.fit(data).stages.last.asInstanceOf[KMeansModel]
+    kmeansModel.computeCost(assembler.transform(data)) / data.count()
+}
+
+// Run and Output results
+(20 to 100 by 20).map(k => (k, clusteringScore0(numericOnly, k))).
+foreach(println)
+
+// Do it again with better controls
+def clusteringScore1(data: DataFrame, k: Int): Double = {
+  val assembler = new VectorAssembler().
+    setInputCols(data.columns.filter(_ != "label")).
+    setOutputCol("featureVector")
+  val kmeans = new KMeans().
+    setSeed(Random.nextLong()).
+    setK(k).
+    setMaxIter(40).
+    setTol(1.0e-5).
+    setPredictionCol("cluster").
+    setFeaturesCol("featureVector")
+  val pipeline = new Pipeline().setStages(Array(assembler, kmeans))
+  val kmeansModel = pipeline.fit(data).stages.last.asInstanceOf[KMeansModel]
+    kmeansModel.computeCost(assembler.transform(data)) / data.count()
+}
+
+// Run and Output results
+(20 to 100 by 20).map(k => (k, clusteringScore1(numericOnly, k))).
+foreach(println)

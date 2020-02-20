@@ -6,3 +6,6 @@ zips/*
 msd/*
 covtype/*
 kddcup/*
+
+# RStudio files
+.Rhistory
