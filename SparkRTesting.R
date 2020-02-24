@@ -61,3 +61,31 @@ bad_cols <- (colnames(data_df[, sapply(data_df, function(col) length(unique(col)
 data.pca <- prcomp(data_df %>% select(-bad_cols), center = TRUE, scale. = TRUE)
 summary(data.pca)
 plot3d(data.pca$x[,c(1,2,3)], col = colors, size = 10)
+
+
+#New model with scaler
+#need to use sparklyr for scaler
+library(sparklyr)
+sc <- spark_connect(master = 'local')
+standard_scaler <- sparklyr::ft_standard_scaler(
+  x = sc, 
+  input_col = "features_temp", 
+  output_col = "features", 
+  with_mean = TRUE)
+data2_df <- copy_to(sc, data_df, overwrite = TRUE) %>% ft_vector_assembler(input_cols = colnames(data_df), output_col = "features_temp")
+standard_scaler_model <- ml_fit(standard_scaler, data2_df)
+standard_scaler_model %>% ml_transform(data2_df) %>% glimpse()
+
+pipeline <- ml_pipeline(standard_scaler) %>% 
+  sparklyr::ml_kmeans( k = 100, max_iter = 24, tol = 1e-5, init_mode = "k-means||")
+
+pipeline_model <- ml_fit(pipeline, data2_df)
+pipeline_data <- ml_predict(pipeline_model, data2_df) 
+
+#Get predictions and plot
+clusters <- pipeline_data %>% sparklyr::collect() %>% select(prediction)
+table(clusters)
+num_clusters <- max(clusters)
+palette <- rainbow(num_clusters)
+colors = sapply(clusters, function(c) palette[c])
+plot3d(data.pca$x[,c(1,2,3)], col = colors, size = 10)

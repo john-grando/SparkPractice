@@ -111,3 +111,86 @@ def clusteringScore1(data: DataFrame, k: Int): Double = {
 // Run and Output results
 (20 to 100 by 20).map(k => (k, clusteringScore1(numericOnly, k))).
 foreach(println)
+
+// New model with scaling
+import org.apache.spark.ml.feature.StandardScaler
+def clusteringScore2(data: DataFrame, k: Int): Double = {
+  val assembler = new VectorAssembler().
+    setInputCols(data.columns.filter(_ != "label")).
+    setOutputCol("featureVector")
+  val scaler = new StandardScaler()
+    .setInputCol("featureVector")
+    .setOutputCol("scaledFeatureVector")
+    .setWithStd(true)
+    .setWithMean(false)
+  val kmeans = new KMeans().
+    setSeed(Random.nextLong()).
+    setK(k).
+    setPredictionCol("cluster").
+    setFeaturesCol("scaledFeatureVector").
+    setMaxIter(40).
+    setTol(1.0e-5)
+  val pipeline = new Pipeline().setStages(Array(assembler, scaler, kmeans))
+  val pipelineModel = pipeline.fit(data)
+  val kmeansModel = pipelineModel.stages.last.asInstanceOf[KMeansModel]
+  kmeansModel.computeCost(pipelineModel.transform(data)) / data.count()
+}
+
+// do hyperparameter cluster test
+(60 to 270 by 30).
+  map(k => (k, clusteringScore2(numericOnly, k))).
+  foreach(println)
+
+// Create OneHot Pipeline
+import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer}
+def oneHotPipeline(inputCol: String): (Pipeline, String) = {
+  val indexer = new StringIndexer().
+    setInputCol(inputCol).
+    setOutputCol(inputCol + "_indexed")
+  val encoder = new OneHotEncoder().
+    setInputCol(inputCol + "_indexed").
+    setOutputCol(inputCol + "_vec")
+  val pipeline = new Pipeline().setStages(Array(indexer, encoder))
+  (pipeline, inputCol + "_vec")
+}
+
+// Make Clustering Score with One hot encoder pipeline
+def clusteringScore3(data: DataFrame, k: Int): Double = {
+  val (protoTypeEncoder, protoTypeVecCol) = oneHotPipeline("protocol_type")
+  val (serviceEncoder, serviceVecCol) = oneHotPipeline("service")
+  val (flagEncoder, flagVecCol) = oneHotPipeline("flag")
+
+  // Original columns, without label / string columns, but with new vector encoded cols
+  val assembleCols = Set(data.columns: _*) --
+    Seq("label", "protocol_type", "service", "flag") ++
+    Seq(protoTypeVecCol, serviceVecCol, flagVecCol)
+  val assembler = new VectorAssembler().
+    setInputCols(assembleCols.toArray).
+    setOutputCol("featureVector")
+
+  val scaler = new StandardScaler()
+    .setInputCol("featureVector")
+    .setOutputCol("scaledFeatureVector")
+    .setWithStd(true)
+    .setWithMean(false)
+
+  val kmeans = new KMeans().
+    setSeed(Random.nextLong()).
+    setK(k).
+    setPredictionCol("cluster").
+    setFeaturesCol("scaledFeatureVector").
+    setMaxIter(40).
+    setTol(1.0e-5)
+
+  val pipeline = new Pipeline().setStages(
+    Array(protoTypeEncoder, serviceEncoder, flagEncoder, assembler, scaler, kmeans))
+  val pipelineModel = pipeline.fit(data)
+
+  val kmeansModel = pipelineModel.stages.last.asInstanceOf[KMeansModel]
+  kmeansModel.summary.trainingCost
+}
+
+// Run hyperparameter test for k
+(60 to 270 by 30).
+  map(k => (k, clusteringScore3(data, k))).
+  foreach(println)
