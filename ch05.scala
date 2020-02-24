@@ -194,3 +194,28 @@ def clusteringScore3(data: DataFrame, k: Int): Double = {
 (60 to 270 by 30).
   map(k => (k, clusteringScore3(data, k))).
   foreach(println)
+
+// Create entropy function
+def entropy(counts: Iterable[Int]): Double = {
+  val values = counts.filter(_ > 0)
+  val n = values.map(_.toDouble).sum
+  values.map { v =>
+    val p = v / n
+    -p * math.log(p)
+  }.sum
+}
+
+// Make dataset of cluster predictions and labels
+val clusterLabel = pipelineModel.transform(data).
+  select("cluster", "label").as[(Int, String)]
+
+// Calculate entropy weighted by cluster size
+val weightedClusterEntropy = clusterLabel.
+  groupByKey { case (cluster, _) => cluster }.
+  mapGroups { case (_, clusterLabels) =>
+    val labels = clusterLabels.map { case (_, label) => label }.toSeq
+    val labelCounts = labels.groupBy(identity).values.map(_.size)
+    labels.size * entropy(labelCounts)
+  }.collect()
+
+weightedClusterEntropy.sum / data.count()
