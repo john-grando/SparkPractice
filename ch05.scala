@@ -219,3 +219,94 @@ val weightedClusterEntropy = clusterLabel.
   }.collect()
 
 weightedClusterEntropy.sum / data.count()
+
+// Run clustering for a specific k and print out cluster/label/count results
+import org.apache.spark.ml.PipelineModel
+def fitPipeline4(data: DataFrame, k: Int): PipelineModel = {
+  val (protoTypeEncoder, protoTypeVecCol) = oneHotPipeline("protocol_type")
+  val (serviceEncoder, serviceVecCol) = oneHotPipeline("service")
+  val (flagEncoder, flagVecCol) = oneHotPipeline("flag")
+
+  // Original columns, without label / string columns, but with new vector encoded cols
+  val assembleCols = Set(data.columns: _*) --
+    Seq("label", "protocol_type", "service", "flag") ++
+    Seq(protoTypeVecCol, serviceVecCol, flagVecCol)
+  val assembler = new VectorAssembler().
+    setInputCols(assembleCols.toArray).
+    setOutputCol("featureVector")
+
+  val scaler = new StandardScaler()
+    .setInputCol("featureVector")
+    .setOutputCol("scaledFeatureVector")
+    .setWithStd(true)
+    .setWithMean(false)
+
+  val kmeans = new KMeans().
+    setSeed(Random.nextLong()).
+    setK(k).
+    setPredictionCol("cluster").
+    setFeaturesCol("scaledFeatureVector").
+    setMaxIter(40).
+    setTol(1.0e-5)
+
+  val pipeline = new Pipeline().setStages(
+    Array(protoTypeEncoder, serviceEncoder, flagEncoder, assembler, scaler, kmeans))
+  pipeline.fit(data)
+}
+
+def clusteringScore4(data: DataFrame, k: Int): Double = {
+  val pipelineModel = fitPipeline4(data, k)
+
+  // Predict cluster for each datum
+  val clusterLabel = pipelineModel.transform(data).
+    select("cluster", "label").as[(Int, String)]
+  val weightedClusterEntropy = clusterLabel.
+    // Extract collections of labels, per cluster
+    groupByKey { case (cluster, _) => cluster }.
+    mapGroups { case (_, clusterLabels) =>
+      val labels = clusterLabels.map { case (_, label) => label }.toSeq
+      // Count labels in collections
+      val labelCounts = labels.groupBy(identity).values.map(_.size)
+      labels.size * entropy(labelCounts)
+    }.collect()
+
+  // Average entropy weighted by cluster size
+  weightedClusterEntropy.sum / data.count()
+}
+
+def clusteringTake4(data: DataFrame): Unit = {
+  (60 to 270 by 30).map(k => (k, clusteringScore4(data, k))).foreach(println)
+
+  val pipelineModel = fitPipeline4(data, 180)
+  val countByClusterLabel = pipelineModel.transform(data).
+    select("cluster", "label").
+    groupBy("cluster", "label").count().
+    orderBy("cluster", "label")
+  countByClusterLabel.show()
+}
+
+clusteringTake4(data)
+
+// Create anamoly dectector.  First make sure pipelineModel is referencing the
+// correct model.
+
+val pipelineModel = fitPipeline4(data, 180)
+import org.apache.spark.ml.linalg.{Vector, Vectors}
+val kMeansModel = pipelineModel.stages.last.asInstanceOf[KMeansModel]
+val centroids = kMeansModel.clusterCenters
+val clustered = pipelineModel.transform(data)
+val threshold = clustered.
+  select("cluster", "scaledFeatureVector").as[(Int, Vector)].
+  map { case (cluster, vec) => Vectors.sqdist(centroids(cluster), vec) }.
+  orderBy($"value".desc).take(100).last
+
+// Apply anomaly detector to data set
+
+val originalCols = data.columns
+val anomalies = clustered.filter { row =>
+  val cluster = row.getAs[Int]("cluster")
+  val vec = row.getAs[Vector]("scaledFeatureVector")
+  Vectors.sqdist(centroids(cluster), vec) >= threshold
+}.select(originalCols.head, originalCols.tail:_*)
+
+anomalies.first()
