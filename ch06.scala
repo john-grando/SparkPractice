@@ -78,3 +78,45 @@ val terms: Dataset[(String, Seq[String])] =
       (title, plainTextToLemmas(contents, bStopWords.value, pipeline))
     }
 }
+
+// Covert temrs to DF for spark.ml tf/idf functions
+val termsDF = terms.toDF("title", "terms")
+val filtered = termsDF.where(size($"terms") > 1)
+
+// Create dataframe with sparse vectors for term frequencies
+import org.apache.spark.ml.feature.CountVectorizer
+val numTerms = 20000
+val countVectorizer = new CountVectorizer().
+  setInputCol("terms").setOutputCol("termFreqs").
+  setVocabSize(numTerms)
+val vocabModel = countVectorizer.fit(filtered)
+val docTermFreqs = vocabModel.transform(filtered)
+
+// Cache to save computation time
+docTermFreqs.cache()
+
+// use spark.ml to calculate IDF
+import org.apache.spark.ml.feature.IDF
+val idf = new IDF().setInputCol("termFreqs").setOutputCol("tfidfVec")
+val idfModel = idf.fit(docTermFreqs)
+val docTermMatrix = idfModel.transform(docTermFreqs).select("title", "tfidfVec")
+
+// Save term ids that map to terms
+val termIds: Array[String] = vocabModel.vocabulary
+
+// Make document title IDS by calling zip and relying on the fact that
+// the ordering will not change.
+val docIds = docTermFreqs.rdd.map(_.getString(0)).
+  zipWithUniqueId().
+  map(_.swap).
+  collect().toMap
+
+// Perform some vector conversions from spark.ml to spark.mlib in order to
+// run SVD.
+
+import org.apache.spark.mllib.linalg.{Vectors,
+  Vector => MLLibVector}
+import org.apache.spark.ml.linalg.{Vector => MLVector}
+val vecRdd = docTermMatrix.select("tfidfVec").rdd.map { row =>
+  Vectors.fromML(row.getAs[MLVector]("tfidfVec"))
+}
